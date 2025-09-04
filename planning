@@ -1,0 +1,448 @@
+# PokerDesk — Единый документ требований
+
+Веб‑платформа для управления покерными турнирами на базе **.NET 8 + ABP Framework** с веб‑ и мобильными клиентами и входом через **Google**.
+
+---
+
+## Оглавление
+
+- [1. Обзор и цели](#1-обзор-и-цели)
+- [2. Технологический стек](#2-технологический-стек)
+- [3. Модули ABP и политика безопасности](#3-модули-abp-и-политика-безопасности)
+- [4. Аутентификация и авторизация (Google Login)](#4-аутентификация-и-авторизация-google-login)
+- [5. Доменная модель](#5-доменная-модель)
+- [6. Функциональные требования](#6-функциональные-требования)
+- [7. Нефункциональные требования](#7-нефункциональные-требования)
+- [8. Черновой REST API](#8-черновой-rest-api)
+- [9. UI/UX требования (web & mobile)](#9-uiux-требования-web--mobile)
+- [10. Деплой, конфигурация, секреты, CI/CD](#10-деплой-конфигурация-секреты-cicd)
+- [11. Миграции и сиды](#11-миграции-и-сиды)
+- [12. Критерии приёмки (MVP)](#12-критерии-приёмки-mvp)
+- [13. Roadmap](#13-roadmap)
+- [14. Out of Scope](#14-out-of-scope)
+- [15. Backlog (MVP)](#15-backlog-mvp)
+
+---
+
+## 1. Обзор и цели
+
+**PokerDesk** — веб‑приложение для управления покерными турнирами. Даёт организаторам инструменты для учёта игроков, регистрации ребаев/аддонов, ведения структуры блайндов и отображения публичного табло.
+
+### Цели
+
+- Упростить проведение живых турниров (офлайн или клубных).
+- Минимизировать ручной учёт и ошибки.
+- Предоставить публичный экран с текущими уровнями/таймером и лидерами.
+
+### Ключевые возможности
+
+- Регистрация игроков и их участие в турнирах.
+- Учёт **ребаев**/**аддонов**, фиксация вылетов, итоговые места.
+- Управление **структурой блайндов** и таймером, realtime‑обновления.
+- Публичное табло (без логина).
+- Финансовые сводки и экспорт в CSV/Excel.
+
+### Внешние ограничения и допущения
+
+- Денежные операции онлайн не выполняются (учёт — офлайн/касса).
+- Интеграции с внешними покер‑клиентами не входят в MVP.
+
+---
+
+## 2. Технологический стек
+
+Сделай всё на основе ABP темплейта
+
+### Backend
+
+- **.NET 8** + **ABP Framework** (модульная архитектура, Identity, Permissions, Audit, Feature/Tenant/Setting Management).
+- **Entity Framework Core** + **PostgreSQL**.
+- **OpenIddict** для аутентификации/авторизации (OIDC).
+- **SignalR** для realtime каналов (таймер блайндов, табло, обновления таблиц).
+- **Serilog** + **OpenTelemetry** (трейсинг/метрики), Health Checks.
+
+### Frontend (Web)
+
+- **Angular** (ABP UI пакеты доступны).
+- REST/SignalR клиент, i18n, тёмная/светлая тема.
+
+### Mobile
+
+- **React Native**
+- Работа с REST/SignalR, офлайн‑кеш (опционально).
+
+### Инфраструктура
+
+- Docker + docker‑compose;
+- AWS
+
+  &#x20;
+- CI/CD: GitHub Actions/Azure DevOps.
+- Redis (backplane для SignalR).
+
+---
+
+## 3. Модули ABP и политика безопасности
+
+### Включаемые модули (без переизобретения)
+
+- **Identity** — пользователи/роли/права.
+- **Permission Management** — декларативные разрешения по модулям/эндпойнтам.
+- **Setting Management** — системные/тенантные настройки.
+- **Audit Logging** — аудит действий и изменений.
+- **Feature Management** — фичи/лицензирование.
+- **Tenant Management** (опц.) — мультитенантность (клубы/организаторы).
+- **OpenIddict** — авторизация/аутентификация (OIDC, внешние провайдеры).
+- **Localization** — en/ru.
+
+### Политики безопасности
+
+- Все эндпойнты закрыты ролями/permissions, кроме публичного табло.
+- Секреты лишь из переменных окружения/хранилища секретов.
+- Минимальные привилегии БД; HTTPS повсюду; защита API по OIDC + ролям/правам ABP.
+
+---
+
+## 4. Аутентификация и авторизация (Google Login)
+
+### Аутентификация
+
+- OIDC через **OpenIddict** (ABP).
+- Внешний провайдер: **Google OAuth 2.0/OIDC**.
+- Стандартный парольный логин допускается, но скрыть в UI.
+
+#### Настройка Google
+
+1. Google Cloud Console → OAuth consent screen.
+2. Создать OAuth Client (Web).
+3. ENV: `Google:ClientId`, `Google:ClientSecret`, `Auth:RedirectUri`.
+4. Scope: `openid email profile`.
+
+#### Привязка аккаунтов
+
+- Автосоздание пользователя при первом входе через Google (или привязка к существующему по e‑mail).
+- Политика маппинга ролей (опц.) по домену почты.
+
+### Авторизация
+
+**Роли по умолчанию**:
+
+- **Admin** — полный доступ в рамках тенанта.
+- **TournamentManager** — управление турнирами/игроками/блайндами.
+- **Dealer** — оперативные действия (старт/пауза уровня, ребай/аддон).
+- **Viewer/Player** — доступ к публичному табло и read‑only экранам.
+
+**Примеры permissions**:
+
+- `Tournaments.Create`, `Tournaments.Update`, `Tournaments.ManageStatus`
+- `Players.Register`, `Players.Update`
+- `Blinds.Advance`, `Blinds.EditCurrent`
+- `Finance.Export`
+
+---
+
+## 5. Доменная модель
+
+### Tournament
+
+- `Id`, `Name`, `Date`
+- `BuyIn`, `RebuyPrice`, `AddonPrice`, `StartingStack`
+- `PrizeRule` (правила/процентные схемы)
+- `BlindStructureId`
+- `Status` (Planned/Running/Paused/Finished)
+- `Settings` (JSON: длительность перерывов, видимость в паблике и т.п.)
+
+### Player
+
+- `Id`, `DisplayName`, `Email` (опц.), `ExternalId`, `Notes`
+
+### Registration (Player ↔ Tournament)
+
+- `Id`, `TournamentId`, `PlayerId`
+- `Seat` (опц.), `StartingStack`
+- `RebuysCount`, `AddonsCount`
+- `IsBusted`, `BustoutPlace`, `Payout`
+
+### BlindStructure
+
+- `Id`, `Name`, `Levels[]`
+
+### BlindLevel
+
+- `Index`, `SB`, `BB`, `Ante`, `DurationMinutes`
+
+### Transaction
+
+- `Id`, `TournamentId`, `PlayerId` (опц. для prize/fee)
+- `Type` (BuyIn/Rebuy/Addon/Payout/Fee)
+- `Amount`, `At`
+
+### Table (опц.) и Seating
+
+- Столы, места и распределение игроков (balancing).
+
+---
+
+## 6. Функциональные требования
+
+### Управление турнирами
+
+- Создание/редактирование турнира; выбор структуры блайндов.
+- Параметры бай‑ина/ребая/аддона, стартового стека.
+- Статусы: Planned → Running → Paused/Resumed → Finished.
+- Экспорт настроек/результатов: CSV/Excel.
+
+### Игроки и регистрация
+
+- Добавление/поиск игроков; быстрая регистрация в турнир.
+- Учёт **ребаев**/**аддонов** (горячие клавиши/быстрые кнопки).
+- Отметка вылета, фиксация места (для итоговой таблицы).
+- Раздача по столам (опц.), ручная коррекция.
+
+### Блайнды и таймер
+
+- Старт/пауза/переключение уровня; автопереход по таймеру.
+- Редактирование текущего уровня «на лету».
+- Realtime обновления через SignalR.
+
+### Табло/экран зрителя
+
+- Публичный режим (без логина): текущий уровень, таймер, анте, число игроков, средний стек, топ‑N чиплидеров.
+- Тёмная/светлая тема; кастомизация логотипа/цветов.
+
+### Финансы и отчётность
+
+- Учёт транзакций: buy‑in, rebuy, addon, fee, payout.
+- Сводки: призовой фонд, сборы, распределение призов.
+- Экспорт CSV/Excel; печать протоколов.
+
+### Локализация
+
+- EN/RU; формат чисел/валют; локализуемые уведомления.
+
+### Уведомления (опц.)
+
+- Toast/внутренние; e‑mail/Telegram бот (позже).
+
+---
+
+## 7. Нефункциональные требования
+
+- **Производительность**: до 3 одновременных турниров, до 300 активных игроков; latency SignalR < 1s.
+- **Надёжность**: сохранение состояния таймера/уровня; idempotency быстрых операций.
+- **Безопасность**: HTTPS, хранение секретов в Secret Manager/Key Vault, минимальные привилегии БД.
+- **Скалирование**: горизонтально для веб/SignalR (Redis backplane).
+- **Логирование/аудит**: включён Audit Logging ABP, бизнес‑аудит ребаев/аддонов/переходов уровней.
+- **Тестирование**: unit/integration (xUnit), e2e web (Playwright/Cypress).
+
+---
+
+## 8. Черновой REST API
+
+> Все эндпойнты защищены ролями/permissions, **кроме** публичного табло.
+
+### Tournaments
+
+```
+GET    /api/tournaments
+POST   /api/tournaments
+GET    /api/tournaments/{id}
+PUT    /api/tournaments/{id}
+POST   /api/tournaments/{id}/status    // start, pause, resume, finish
+```
+
+Права: `Tournaments.*`
+
+### Players
+
+```
+GET    /api/players/search?q=...
+POST   /api/players
+GET    /api/players/{id}
+PUT    /api/players/{id}
+```
+
+Права: `Players.*`
+
+### Registrations
+
+```
+POST   /api/tournaments/{id}/registrations
+POST   /api/tournaments/{id}/registrations/{regId}/rebuy
+POST   /api/tournaments/{id}/registrations/{regId}/addon
+POST   /api/tournaments/{id}/registrations/{regId}/bust
+```
+
+Права: `Players.Register`, `Players.Update`
+
+### Blind Structures
+
+```
+GET    /api/blind-structures
+POST   /api/blind-structures
+GET    /api/blind-structures/{id}
+PUT    /api/blind-structures/{id}
+```
+
+Права: `Blinds.*`
+
+### Tournament Blinds (runtime)
+
+```
+GET    /api/tournaments/{id}/blinds/current
+POST   /api/tournaments/{id}/blinds/advance
+POST   /api/tournaments/{id}/blinds/set-level/{levelIndex}
+POST   /api/tournaments/{id}/blinds/pause
+POST   /api/tournaments/{id}/blinds/resume
+```
+
+Права: `Blinds.Advance`, `Blinds.EditCurrent`
+
+### Finance
+
+```
+GET    /api/tournaments/{id}/finance/summary
+GET    /api/tournaments/{id}/finance/transactions
+POST   /api/tournaments/{id}/finance/payouts/generate
+```
+
+Права: `Finance.*`
+
+### Public (no auth)
+
+```
+GET    /api/public/tournaments/{slug}/display/state
+GET    /api/public/tournaments/{slug}/display/leaders
+GET    /api/public/tournaments/{slug}/display/prizepool
+```
+
+---
+
+## 9. UI/UX требования (web & mobile)
+
+### Web — Admin/Manager
+
+- Панель с вкладками: **Турнир**, **Игроки**, **Блайнды/Таймер**.
+- Быстрые действия: ребай/аддон/вылет, старт/пауза/след. уровень, генерация призов.
+- Горячие клавиши: R (rebuy), A (addon), N (next level).
+- Адаптив, тёмная/светлая тема.
+
+### Web — Viewer (табло)
+
+- Крупные значения: уровень, SB/BB/Ante, таймер.
+- Сводка: игроков в игре, средний стек, призовой фонд.
+- Топ‑5 чиплидеров. Кастомизация тем/логотипа.
+
+### Mobile
+
+- Режим «пульта» для блайндов (start/pause/advance).
+- Быстрые операции на игроках (rebuy/addon/bust).
+- Офлайн буфер (опц.), авто‑синк при онлайне.
+
+---
+
+## 10. Деплой, конфигурация, секреты, CI/CD
+
+### Деплой
+
+- Docker + docker‑compose.
+- Nginx как reverse proxy, HTTPS (Let's Encrypt/CertManager).
+- Redis для SignalR backplane.
+
+### Конфигурация (ENV)
+
+- `ConnectionStrings__Default`
+- `Auth:Authority`, `Auth:Audience`
+- `Google:ClientId`, `Google:ClientSecret`, `Auth:RedirectUri`
+- `Redis:Connection`
+- `Serilog:*`
+
+Профили: **Development / Staging / Production**.
+
+### Health/Observability
+
+- Эндпойнты `/health`, `/ready`.
+- OpenTelemetry экспорт в Jaeger/Zipkin; логи — в Elastic/Seq.
+
+### CI/CD
+
+- GitHub Actions/Azure DevOps: build, тесты, контейнеризация, деплой.
+
+---
+
+## 11. Миграции и сиды
+
+### Миграции
+
+- Entity Framework Core Migrations.
+- Автоматический прогон миграций при старте (опц.).
+
+### Сиды
+
+- Роли: Admin, TournamentManager, Dealer, Viewer.
+- Permissions по ролям.
+- Пример структуры блайндов (Classic 12–15 мин).
+- Тестовый турнир + 10 игроков.
+
+---
+
+## 12. Критерии приёмки (MVP)
+
+- Создать турнир, запустить таймер, переключить ≥2 уровня — публичное табло обновляется < 1с.
+- Зарегистрировать игрока, сделать ребай и аддон — в финсводке корректно растёт призовой фонд.
+- Завершить турнир — экспорт CSV содержит корректные места и выплаты.
+- Вход через Google выдаёт корректную роль/права согласно настройкам.
+- Аудит фиксирует: вход/выход, ребай/аддон, смена уровня.
+
+---
+
+## 13. Roadmap
+
+### MVP (обязательное)
+
+- Аутентификация (Google + локальная), роли/права.
+- 1 активный турнир.
+- Регистрация/ребаи/аддоны/вылеты.
+- Таймер блайндов + realtime.
+- Публичное табло.
+- Экспорт CSV.
+- Аудит + базовые отчёты.
+
+### v1.1
+
+- Несколько одновременных турниров.
+- Шаблоны структур блайндов.
+- Генерация призовых по правилам (фикс/проценты/ступени).
+- Seating и balancing по столам.
+
+### v1.2
+
+- Роли Dealer/Viewer с кастомными экранами.
+- Телеметрия/дашборды.
+- Telegram‑бот уведомлений.
+
+---
+
+## 14. Out of Scope
+
+- Интеграции с внешними покер‑клиентами и онлайновыми платформами.
+- Онлайн‑платежи/эквайринг.
+- Сложные античит‑механизмы.
+
+---
+
+## 15. Backlog (MVP)
+
+### Эпосы
+
+- Аутентификация/Роли/Права
+- Турниры/Игроки/Регистрации
+- Таймер блайндов/Realtime
+- Финансы/Отчёты/Экспорт
+- Публичное табло
+- Деплой/Инфра/Обсервабилити
+
+### Задачи (черновик)
+
+-
+
